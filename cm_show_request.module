@@ -1,0 +1,783 @@
+<?php
+
+define ("CM_SHOW_REQUEST_TIMEZONE_SHIFT", TRUE);
+define ("CM_SHOW_REQUEST_ADMIN_ROLE", 'System Admin');
+define ("CM_SHOW_REQUEST_PROGRAMMING_STAFF_ROLE", 'Staff - Programming');
+define ("CM_SHOW_REQUEST_DAILY_AIRINGS_VIEW",
+	'show_request_daily_airings');
+define ("CM_SHOW_REQUEST_SHOW_AIRINGS_VIEW", 'pcm_show_airings');
+define ("CM_SHOW_REQUEST_SERIES_AIRING_TYPE_TID", 820);
+define ("CM_SHOW_REQUEST_SPECIAL_AIRING_TYPE_TID", 821);
+define ("CM_SHOW_REQUEST_RUNTIME_FIELD", "field_runtime");
+define ("CM_SHOW_REQUEST_PROJECT_FIELD", "og_group_ref");
+/**
+ * Implements hook_menu().
+ */
+function cm_show_request_menu() {
+  $items = array();
+  $items['admin/programming/show_request/ajax_times'] =
+    array(
+	  'title' => t('Show Request Ajax'),
+	  'page callback' => 'cm_show_request_ajax_times',
+	  'delivery callback' => 'drupal_json_output',
+	  'access arguments' => array('access content'),
+	  'type' => MENU_CALLBACK,
+	  );
+  $items['node/%/show_request/email'] =
+    array(
+	  'title' => t('Email'),
+	  'page callback' => 'drupal_get_form',
+	  'page arguments' => array('cm_show_request_email_form'),
+	  'access arguments' => array('view field_show_scheduling'),
+	  'type' => MENU_LOCAL_TASK,
+	  );
+
+  return $items;
+}
+
+/**
+ * Provides a form to email a producer all of their shows
+ */
+function cm_show_request_email_form() {
+  $show_nid = arg(1);
+
+  $show = node_load($show_nid);
+  $author = user_load($show->uid);
+  $to_email = $author ? $author->mail : "";
+  
+  $form = array();
+
+  $form['fieldset'] = array(
+    '#type' => 'fieldset',
+    '#title' => "<h3>".t('Show Schedule Emailer')."</h3>",
+    '#collapsable' => FALSE,
+  );
+
+  $form['fieldset']['cm_show_request_email_to'] = 
+     array(
+	   '#type' => 'textfield',
+	   '#size' => 60,
+	   '#maxlength' => 100,
+	   '#required' => TRUE,	   
+	   '#title' => t('To Email Address'),
+	   '#default_value' => $to_email,
+  );
+
+  $form['fieldset']['cm_show_request_email_from'] = 
+     array(
+	   '#type' => 'textfield',
+	   '#size' => 60,
+	   '#maxlength' => 100,
+	   '#required' => TRUE,	   
+	   '#title' => t('From Email Address'),
+	   '#default_value' => 
+	   variable_get('cm_show_request_email_from',  'pcmit@pcmtv.org'),
+  );
+
+ $form['fieldset']['cm_show_request_email_subject'] =
+   array(
+	 '#type' => 'textfield',
+	 '#size' => 60,
+	 '#maxlength' => 100,
+	 '#required' => TRUE,
+	 '#title' => t('Subject'),
+           '#default_value' =>
+	 variable_get('cm_show_request_email_subject',  
+		      'Your PCM Show Schedule'),
+	 );
+
+ $default_intro = "Your PCM Show, !title, has been successfully scheduled. ".
+   "Please review the Dates and Times below.";
+ $default_end = "Thank you for submitting your show. \n\n".
+   "Sincerely,\nPCM Staff";
+ 
+ $default_body = "Dear " . $author->display_name . ",\n\n";
+ 
+ $title = (isset($show->field_tv_guide_title[LANGUAGE_NONE]) &&
+      isset($show->field_tv_guide_title[LANGUAGE_NONE][0])) ?
+  $show->field_tv_guide_title[LANGUAGE_NONE][0]['value']: $show->title;
+ $default_body .= t(variable_get('cm_show_request_email_message_introduction', 
+			    $default_intro), 
+	       array('!title'=>$title));
+
+ $default_body .= "\n\n";
+
+ $default_body .= cm_show_request_email_airing_block($show);
+
+ $default_body .= "\n";
+
+ $default_body .= t(variable_get('cm_show_request_email_message_ending', 
+			    $default_end));
+ 
+ $form['fieldset']['cm_show_request_email_body'] =
+    array(
+	  '#type' => 'textarea',
+          '#title' => t("Message"),
+	  '#required' => TRUE,
+	  '#rows' => 15,
+	  '#suffix' => $suffix,
+	  '#description' => t("This is the actual text that will be sent ".
+			      "to the show author. If you would like to ".
+			      "change the message template permanantly ".
+			      "you need to edit the fields in ".
+			      '"Message Template Config" below as well.'),
+	  '#default_value' =>
+	  variable_get('cm_show_request_email_body',
+		       $default_body),
+	  );
+
+  $form['fieldset']['template'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Message Template Config'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE,
+  );
+
+  $form['fieldset']['template']['cm_show_request_email_message_introduction'] =
+    array(
+	  '#type' => 'textarea',
+          '#title' => t("Message Introduction"),
+	  '#required' => TRUE,
+	  '#rows' => 5,
+	  '#suffix' => $suffix,
+	  '#default_value' =>
+	  variable_get('cm_show_request_email_message_introduction',
+		       $default_intro ),
+	  '#description' => t("For show title, use !title as a token."),
+	  );
+
+  $form['fieldset']['template']['cm_show_request_email_message_ending'] =
+    array(
+	  '#type' => 'textarea',
+          '#title' => t("Message Ending"),
+	  '#required' => TRUE,
+	  '#rows' => 5,
+	  '#suffix' => $suffix,
+	  '#default_value' =>
+	  variable_get('cm_show_request_email_message_ending',
+		       $default_end ),
+	  );
+
+  
+
+  $form['fieldset']['submit_button'] = array(
+					     '#type' => 'submit',
+					     '#prefix' => "<br/>",
+					     '#value' => t('Send Email'),
+					     );
+  
+  
+  return $form;
+}
+
+function cm_show_request_email_form_submit($form, &$form_state) {
+  $email_to = $form['fieldset']['cm_show_request_email_to']['#value'];
+  $email_from = $form['fieldset']['cm_show_request_email_from']['#value'];
+  $email_subject =$form['fieldset']['cm_show_request_email_subject']['#value'];
+  $email_body = $form['fieldset']['cm_show_request_email_body']['#value'];
+  $email_intro = $form['fieldset']['template']
+    ['cm_show_request_email_message_introduction']['#value'];
+  $email_end = $form['fieldset']['template']
+    ['cm_show_request_email_message_ending']['#value'];
+
+
+  $headers = 'From: '.$email_from . "\r\n" .
+    'Reply-To: ' .$email_from . "\r\n" .
+    'X-Mailer: PHP/' . phpversion();
+  
+  mail($email_to, $email_subject, $email_body, $headers);
+  
+  drupal_set_message(t("Email was successfully sent to !email",
+		       array('!email' => $email_to)));
+
+  variable_set('cm_show_request_email_from', $email_from);
+  variable_set('cm_show_request_email_subject', $email_subject);
+
+  variable_set('cm_show_request_email_message_introduction', $email_intro);
+  variable_set('cm_show_request_email_message_ending', $email_end);
+}
+
+function cm_show_request_email_airing_block($show) {
+  $block = "";
+  //fetch view of show airings
+  $view = views_get_view(CM_SHOW_REQUEST_SHOW_AIRINGS_VIEW);
+  if (!$view) {
+    drupal_set_message("Error Code 21678: Missing view:".
+		       CM_SHOW_REQUEST_SHOW_AIRINGS_VIEW, 'error');
+    return;
+  }
+  //set show nid as argument
+  $view->set_arguments(array($show->nid));
+  
+  //execute and get results
+  $view->execute();
+  $results = $view->result;
+  
+  $airdates = array();
+  foreach($results as $result) {
+    $airing_load_result = 
+      entity_load('airing', array($result->airing_id));
+    if ($airing_load_result) {
+      $airing = array_shift($airing_load_result);
+      $timestamp = 
+	strtotime(cm_show_request_get_single_field_value($airing, 
+							 'field_airing_date'));
+
+      $timestamp = CM_SHOW_REQUEST_TIMEZONE_SHIFT ? 
+	($timestamp + date('Z', $timestamp)) : $timestamp;
+      
+      $channel_tid = 
+	cm_show_request_get_single_field_value($airing, 
+					       'field_airing_channel', 'tid');
+      $term = taxonomy_term_load($channel_tid);
+      $block .= $term->name . ": " . date('l, m-d-Y h:i a', $timestamp)."\n";
+    }
+  }
+  return $block;
+}
+function cm_show_request_node_validate($node, $form, &$form_state) {
+
+  if (isset($form['#node_edit_form']) && $form['#node_edit_form']
+      && $form['type']['#value'] == 'cm_show') {      
+    
+    // if airings - get the earliest airing date with a source for this show
+    $airing_source_date = cm_show_request_get_airings_source_date($node);
+    
+    if ((empty ($airing_source_date))) {
+      // at least one row of playback preference must be set
+      $interval = !isset($form_state['values']['field_playback_preferences']
+          [LANGUAGE_NONE][0]['field_playback_interval'][LANGUAGE_NONE][0]['tid'])
+          ? TRUE : FALSE;
+      $day_part = !isset($form_state['values']['field_playback_preferences']
+          [LANGUAGE_NONE][0]['field_day_part'][LANGUAGE_NONE][0]['tid'])
+          ? TRUE : FALSE;
+      $var_set = $interval + $day_part;
+
+      switch ($var_set) {
+        case 1:
+          if ($interval) {
+          $error_msg = "Playback preferences are required. Please select a " .
+              "Day preference.";
+          }
+          if ($day_part) {
+          $error_msg = "Playback preferences are required. Please select a " .
+              "Time preference.";
+          }        
+          form_set_error('field_playback_preferences', $error_msg);         
+          return;
+        case 2:
+          $error_msg = "Playback preferences are required. Please select a " .
+              "Day and Time preference.";
+          form_set_error('field_playback_preferences', $error_msg);
+          return;
+      }
+    }
+    
+    
+    $schedule = isset($node->field_show_scheduling) &&
+      $node->field_show_scheduling[LANGUAGE_NONE] ? 
+      $node->field_show_scheduling[LANGUAGE_NONE] : array();
+ 
+    $valid_airing_data = array();
+    
+    foreach ($schedule as $data) {
+      $source = $data['field_live_source'][LANGUAGE_NONE][0]['value'];
+
+      
+      $channel = $data['field_airing_channel'][LANGUAGE_NONE][0]['tid'];
+
+      $date = $data['field_show_schedule_start_date']
+          [LANGUAGE_NONE][0]['value'];
+      
+      if ($date && strpos($date, ' 00:00:00')) {
+          $date = str_replace(' 00:00:00', '', $date);
+      }
+   
+      $time = $data['field_start_time']
+	[LANGUAGE_NONE][0]['value'];
+      
+      if(FALSE) {
+        $error_msg = t('The show with the live studio must be the earliest of '.
+            'of any airing.');
+        form_set_error('form', $error_msg);
+        return;
+      }           
+      
+      if ($channel && $date) {
+        if (!$time) {
+          $error_msg = t('You did not select a time from the dropdown for '.
+             'one of the schedule rows');
+          form_set_error('field_show_scheduling', $error_msg);
+          return;
+        }
+        
+        // only allow one live studio per SHOW
+        if ($source && $airing_source_date['source']) {
+          $error_msg = t('A live studio show already exists for this show. '.
+              'Only one live studio is allowed per show.');
+          form_set_error('field_show_scheduling', $error_msg);
+          return;        
+        }
+        
+
+        //if the constant  set to true, switch timezone
+        $scheduling_date = strtotime($date.' '.$time);
+        $scheduling_date = CM_SHOW_REQUEST_TIMEZONE_SHIFT ? 
+          ($scheduling_date - date('Z', $scheduling_date)) : $scheduling_date;
+
+               
+        //  the show with the live studio has to be the earliest of any airing
+        // per show
+        if ($airing_source_date['source']) {
+          if ($scheduling_date <= $airing_source_date['date']) {
+            $error_msg = t('You are attempting to schedule an airing for '.
+                'a date and time that is the same or earlier than an existing '.
+                'live studio airing. The live studio airing has to be the '.
+                'earliest of any airing per show.');
+            form_set_error('field_show_scheduling', $error_msg);
+            return;
+          }
+        }
+        else {
+          // no airing source but have a scheduling source - 
+          // the date needs to be less than any existing airing date.
+          if ($source && $airing_source_date['date']) {
+            if ($scheduling_date >= $airing_source_date['date']) {
+              $error_msg = t('You are attempting to schedule a live studio '.
+                  'airing for a date and time that is the same or  later than '.
+                  'an existing airing. The live studio airing must be the '.
+                  'earliest of any airing per show.');
+              form_set_error('field_show_scheduling', $error_msg);
+              return;
+            }            
+          }         
+        }
+        
+        // no airings - check for live studio as earliest in scheduling
+        if ($source) {
+          $source_date = $scheduling_date;
+        }
+        else {
+          if (isset($source_date)) {
+            if ($scheduling_date < $source_date) {
+              $error_msg = t('You are attempting to schedule a live studio '.
+                  'airing for a date and time that is later than a non-live '.
+                  'studio airing. The live studio airing must be the earliest '.
+                  'of any airing per show.');
+              form_set_error('field_show_scheduling', $error_msg);
+              return;
+            }
+          }
+        }
+
+        $airing_data = array(
+           'source' => $source,
+           'channel' => $channel,
+           'date' => $date,
+           'time' => $time,
+           );  
+
+        //FIXME ADDING VALIDATION TO MAKE SURE AIRING TIMES IS STILL
+        //AVAILABLE. THIS WOULD OCCUR IF AN AIRING IS ADDED AFTER THE 
+        //DROPDOWN TIMES WERE LOADED ON THE FORM
+        if (FALSE) {
+          $error_msg = t('One of your selected times is no longer available. '.
+             'Please choose another time.');
+
+          form_set_error('field_show_scheduling', $error_msg);
+          return;
+        }
+        $valid_airing_data[] = $airing_data;
+      }
+    }
+
+    global $cm_show_request_valid_airing_data;
+    $cm_show_request_valid_airing_data = ($valid_airing_data) ?
+      $valid_airing_data : NULL;
+
+  }
+
+}
+function cm_show_request_node_presave($node) {
+  //we are never actualy saving the field collection, just using it to
+  //create airings
+  $node->field_show_scheduling[LANGUAGE_NONE] = array();
+}
+function cm_show_request_node_insert($node) {
+  if ($node->type == 'cm_show') {
+    $node = cm_show_request_postsave($node);
+  }
+  
+}
+function cm_show_request_node_update($node) {
+  if ($node->type == 'cm_show') {
+    $node = cm_show_request_postsave($node);
+  }
+}
+function cm_show_request_postsave($node) {
+  global $cm_show_request_valid_airing_data;
+  global $cm_show_requst_skip_postsave;
+
+  if (isset($cm_show_requst_skip_postsave)) {
+    return;
+  }
+  ////////////////////////////////////////////////////////////////////////////
+  //grab all the future airings and reset their end time based on show
+  //runtime
+  
+  //fetch view of show airings
+  $view = views_get_view(CM_SHOW_REQUEST_SHOW_AIRINGS_VIEW);
+  if (!$view) {
+    drupal_set_message("Error Code 21989: Missing view:".
+		       CM_SHOW_REQUEST_SHOW_AIRINGS_VIEW, 'error');
+    return;
+  }
+  //set show nid as argument
+  $view->set_arguments(array($node->nid));
+  
+  //execute and get results
+  $view->execute();
+  $results = $view->result;
+  
+  $airdates = array();
+  foreach($results as $airing_result) {
+    $airing_load_result = 
+      entity_load('airing', array($airing_result->airing_id));
+    if ($airing_load_result) {
+      $airing = array_shift($airing_load_result);
+      //save each airing so its title and runtime get updated
+      //NO LONGER SAVING AIRINGS WHEN SAVING A SHOW
+      //entity_save('airing', $airing);
+      $airdates[$airing_result->airing_id] = 
+	cm_show_request_get_single_field_value($airing, 'field_airing_date');
+    }
+  }
+
+  ////////////////////////////////////////////////////////////////////////////
+  //IF WE HAVE VALIDATED SHOW REQUEST DATA WE WILL CREATE AIRINGS FOR THE SHOW
+  if (isset($cm_show_request_valid_airing_data) &&
+      $cm_show_request_valid_airing_data) {
+    $project_field = isset($node->{CM_SHOW_REQUEST_PROJECT_FIELD}) ?
+      $node->{CM_SHOW_REQUEST_PROJECT_FIELD} : array();
+    $project_nid = isset($project_field[LANGUAGE_NONE]) ?
+      $project_field[LANGUAGE_NONE][0]['target_id'] : NULL;
+
+    $runtime_field = isset($node->{CM_SHOW_REQUEST_RUNTIME_FIELD}) ?
+      $node->{CM_SHOW_REQUEST_RUNTIME_FIELD} : array();
+
+    //FIND RUNTIME FROM SHOW, THIS WILL ONLY NOT EXIST WHEN ITS A REGULAR 
+    //SERIES EPISODE SHOW. ITS RUNTIME WILL BE SET BY THE LENGTH OF THE AIRING 
+    $runtime = (isset($runtime_field[LANGUAGE_NONE])) ?
+      $runtime_field[LANGUAGE_NONE][0]['value'] : 60;
+
+    //we are grabbing the validated airing data we saved in the validate hook
+    //and then creating an airing for each of the request rows
+    $new_airdates = array();
+    while ($airing_data = array_shift($cm_show_request_valid_airing_data)) {
+      $new_airing = entity_create('airing', array());
+
+      $start = strtotime($airing_data['date'].' '.$airing_data['time']);
+
+      //store time before we shift it
+      $time = $start;
+      //We are switching timezones only if the Constant is set to true
+      $start = CM_SHOW_REQUEST_TIMEZONE_SHIFT ? 
+	($start - date('Z', $start)) : $start;
+
+      if (date('I', $time) != date('I', $start)) {
+	if (date('I', $start)) {
+	  $start = $start - 60*60;
+	}
+	else if (date('I', $time)) {
+	  $start = $start + 60*60;
+	}
+      }
+
+      
+      $end = $start +  $runtime;
+      $new_airing->field_airing_date[LANGUAGE_NONE][0]['value'] = 
+	date('Y-m-d H:i:s', $start);
+      $new_airing->field_airing_date[LANGUAGE_NONE][0]['value2'] = 	
+	date('Y-m-d H:i:s', $end);
+
+      $new_airing->field_airing_project_ref[LANGUAGE_NONE][0]['target_id'] = 
+	$project_nid ? $project_nid : NULL;
+      $new_airing->field_airing_show_ref[LANGUAGE_NONE][0]['target_id'] =
+	$node->nid;
+      $new_airing->field_airing_channel[LANGUAGE_NONE][0]['tid'] = 
+	$airing_data['channel'];
+      $new_airing->field_live_source[LANGUAGE_NONE][0]['value'] =
+	$airing_data['source'] ? $airing_data['source'] : 0;
+      $new_airing->field_airing_type[LANGUAGE_NONE][0]['tid'] =
+	CM_SHOW_REQUEST_SPECIAL_AIRING_TYPE_TID;
+
+      $wrapper = entity_metadata_wrapper('airing', $new_airing);
+      $wrapper->save();
+      $new_airing->airing_id = $wrapper->getIdentifier();
+
+      $new_airdates[$new_airing->airing_id] = date('Y-m-d H:i:s', $start);
+    }
+  }
+  
+  drupal_alter('cm_show_request_postsave', $node, $airdates, $new_airdates);
+
+  return $node;
+}
+/**
+ * Function called by ajax call back to figure out what values to display in
+ * the time (i.e. 8am, 8:30am, 9am...) dropdown for show scheduling
+ */
+function cm_show_request_ajax_times() { 
+  $source = arg(4);
+  $channel = arg(5);
+  $show = arg(6);
+  $date  = date('Y-n-j', strtotime(filter_input(INPUT_GET, 'date')));
+
+  return cm_show_request_get_start_time_dropdown_values($source,
+							$channel,
+							$date,
+							$show);
+}
+
+function cm_show_request_get_start_time_dropdown_values($source,
+							$channel,
+							$date,
+							$show) {
+  $ret = array();
+
+  $show = $show ? node_load($show) : NULL;
+  
+  $runtime = ($show && isset($show->field_runtime[LANGUAGE_NONE])) ?
+    $show->field_runtime[LANGUAGE_NONE][0]['value'] : 60;
+  $block_size = ceil($runtime/(60*30));
+
+  $taken_slots = cm_show_request_slots($source, $channel, $date);
+
+  $counter = $hour_counter = 0;
+  $previous_airing_id = 0;
+  for($i = $counter ; $i < 48; $i++) {
+    $counter++;
+    $time = ($hour_counter > 12) ? $hour_counter - 12 : $hour_counter;
+    $minutes = ($i%2 == 1) ? "30" : "00";
+    $time .= ":".$minutes; 
+    $time .= ($hour_counter >= 12) ? "pm" : "am";
+    $time = ($time == "0:00am") ? "12:00am" : $time;
+    $time = ($time == "0:30am") ? "12:30am" : $time;
+
+    $hour_counter = ($i % 2 == 0) ? $hour_counter : $hour_counter + 1;
+
+    $airing_id = 0;
+    $is_open = cm_show_request_is_time_open($time, $date, $taken_slots,
+					    $airing_id);
+
+    if ($is_open) {
+      $value = array('time_id' => $time, 'time' => $time);
+      $ret[$i] = $value;
+    } 
+    else {
+      if ($previous_airing_id != $airing_id) {
+	$previous_airing_id = $airing_id;
+	for($buffer = 1; $buffer < $block_size; $buffer++) {
+	  $index = $i - $buffer;
+	  if (isset($ret[$index]))  {
+	    unset($ret[$index]);
+	  }
+	}
+      }
+    }
+  }
+
+  ///////////////////////////////////////////////////////////////////
+  //REMOVE ANY SLOTS AT END OF DAY THAT OVERLAP AN AIRING THE NEXT DAY
+  $tomorrow = date('Y-n-j', strtotime('+1 day', strtotime($date)));
+  $taken_slots = cm_show_request_slots($source, $channel, $tomorrow);
+  $counter = $hour_counter = 0;
+  for($i = $counter ; $i < $block_size; $i++) {
+    $counter++;
+    $time = ($hour_counter > 12) ? $hour_counter - 12 : $hour_counter;
+    $minutes = ($i%2 == 1) ? "30" : "00";
+    $time .= ":".$minutes; 
+    $time .= ($hour_counter >= 12) ? "pm" : "am";
+    $time = ($time == "0:00am") ? "12:00am" : $time;
+    $time = ($time == "0:30am") ? "12:30am" : $time;
+
+    $hour_counter = ($i % 2 == 0) ? $hour_counter : $hour_counter + 1;
+
+    $airing_id = 0;
+    $is_open = cm_show_request_is_time_open($time, $tomorrow, $taken_slots,
+					    $airing_id);
+    if ($is_open) {
+      //do nothing, not adding new slots, just taking away
+    } 
+    else {
+      for($buffer = 1; $buffer < $block_size; $buffer++) {
+	$index = ($i + 48) - $buffer;
+	if (isset($ret[$index])) {
+	  unset($ret[$index]);
+	}
+      }
+
+      //since we found the first airing tomorrow, we no longer need to do 
+      //this check loop
+      break;
+    }
+  }
+
+  return $ret;
+
+}
+
+function cm_show_request_is_time_open($time, $date, $taken_slots,
+				      &$airing_id) {
+  //$log_time = "3:30pm";
+  //if ($time == $log_time) dsm($taken_slots, 'taken slots');
+  
+  $ret = TRUE;
+  $slot_time = strtotime($date . ' ' . $time); 
+
+  $channel_slots = $taken_slots['channel'];
+  while ($taken_slot = array_shift($channel_slots)) {
+    //if($time == $log_time) dsm(date('D h:i:sa', $taken_slot['start']) ." - ".
+    //date('D h:i:sa', $taken_slot['end']) . " - " .
+    //date('D h:i:sa', $slot_time));
+    if ($taken_slot['end'] > $slot_time && 
+	$taken_slot['start'] <= $slot_time) {
+
+      $airing_id = $taken_slot['airing_id'];
+      $ret = FALSE;
+      //if ($time == $log_time) dsm("hi mo3");
+      break;
+    }
+  }
+  
+  if (!$ret) {
+    return $ret;
+  }
+
+  $source_slots = $taken_slots['source'];
+  while ($taken_slot = array_shift($source_slots)) {
+    if ($taken_slot['end'] >= $slot_time && 
+	$taken_slot['start'] <= $slot_time) {
+      
+      $airing_id = $taken_slot['airing_id'];
+      $ret = FALSE;
+      break;
+    }
+  }
+
+  return $ret;
+}
+/**
+ * Function will return an array with airings for both a source and a channel
+ * on a particular date
+ */
+function cm_show_request_slots($source, $channel, $date) {  
+  $view = views_get_view(CM_SHOW_REQUEST_DAILY_AIRINGS_VIEW);
+  if (!$view) {
+    drupal_set_message("Error Code 25289: Missing view:".
+                       CM_SHOW_REQUEST_DAILY_AIRINGS_VIEW, 'error');
+    return;
+  }
+
+  $view->set_arguments(array($date));
+  $view->execute();
+  $results = $view->result;
+
+  $channel_slots = array();
+  $counter = 0;
+  $source_slots = array();
+
+  foreach($results as $result) {
+    $result_info = array();
+
+    $result_info['airing_id'] = $result->airing_id;
+    $result_info['source'] = isset($result->field_field_live_source[0]) ?
+      $result->field_field_live_source[0]['raw']['value'] : "";
+    $result_info['channel'] = 
+      $result->field_field_airing_channel[0]['raw']['tid'];
+    $result_info['title'] = 
+      $result->field_field_airing_title[0]['raw']['value'];
+
+    //SET START AND END TIME OF THE RESULT AIRING, WILL DO A TIMEZONE
+    //TRANSLATION OF THE TIME IF THE STATIC VARIABLE IS SET TO TRUE
+    $utc_start = 
+      strtotime($result->field_field_airing_date[0]['raw']['value']);
+
+    $result_info['start'] = CM_SHOW_REQUEST_TIMEZONE_SHIFT ? 
+      ($utc_start + date('Z', $utc_start)) : $utc_start;
+
+    $utc_end = 
+      strtotime($result->field_field_airing_date[0]['raw']['value2']);
+
+    $result_info['end'] = CM_SHOW_REQUEST_TIMEZONE_SHIFT ? 
+      ($utc_end + date('Z', $utc_end)) : $utc_end;
+
+
+    if ($result_info['channel'] == $channel) {
+      $channel_slots[] = $result_info;
+    }
+
+    if ($result_info['source'] == $source) {
+      $source_slots[] = $result_info;
+    }
+  }
+
+  return array('channel' => $channel_slots,
+	       'source' => $source_slots);
+}
+
+/**
+ * get the date of the live studio airing
+ */
+function cm_show_request_get_airings_source_date($node) {
+ 
+    //fetch view of show airings - contains asc airing start dates
+  $view = views_get_view(CM_SHOW_REQUEST_SHOW_AIRINGS_VIEW);
+  if (!$view) {
+    drupal_set_message("Error Code 21989: Missing view:".
+		       CM_SHOW_REQUEST_SHOW_AIRINGS_VIEW, 'error');
+    return;
+  }
+  //set show nid as argument
+  $view->set_arguments(array($node->nid));
+  
+  //execute and get results
+  $view->execute();
+  $results = $view->result;
+  
+  $ret = array();
+  
+  foreach ($results as $airing) {
+    // relies on the fact that batch scheduling sorted by date before
+    // creating airings returns earliest date for show
+    $date = (isset($airing->field_field_airing_date[0]['raw']['value'])) ?
+        $airing->field_field_airing_date[0]['raw']['value'] : NULL;
+      
+    $source = (isset($airing->field_field_live_source[0]['raw']['value'])) ?
+        $airing->field_field_live_source[0]['raw']['value'] : NULL;
+    
+    break;
+  } 
+
+  $ret['date'] = (isset($date)) ? strtotime($date) : NULL;
+  $ret['source'] = (isset($source)) ? $source : NULL;
+  
+  return $ret;
+}
+
+
+/**
+ * Helper function to get a single value off of a entity
+ */
+function cm_show_request_get_single_field_value($entity, $field_name, 
+						$index = 'value') {
+  if (isset($entity->{$field_name})) {
+    $field = $entity->{$field_name};
+    if (isset($field[LANGUAGE_NONE]) && 
+	isset($field[LANGUAGE_NONE][0]) &&
+	isset($field[LANGUAGE_NONE][0][$index])) {
+      return $field[LANGUAGE_NONE][0][$index];
+    }
+  }
+  return NULL;
+}

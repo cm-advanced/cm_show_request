@@ -1,0 +1,11 @@
+name = CMA Show Request
+description = Module will manipulate admin scheduling fields to handle show requests
+core = 7.x
+
+package = Community Media Advanced
+version = 7.x-1.0
+project = "cm_show_request"
+project_status_url = https://github.com/cm-advanced/cm_show_request
+
+dependencies[] = cm_show
+scripts[] = cm_show_request.js
